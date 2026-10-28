@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-slate-950 text-slate-100">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Impostor Role Assigner - Party Game</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- PeerJS CDN for WebRTC Cloud Signaling -->
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Font: Orbitron & Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        orbitron: ['Orbitron', 'sans-serif'],
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    colors: {
+                        crew: '#00f0ff',
+                        impostor: '#ff0055',
+                    },
+                    animation: {
+                        'pulse-glow-red': 'pulseRed 2s infinite',
+                        'pulse-glow-cyan': 'pulseCyan 2s infinite',
+                        'float': 'float 4s ease-in-out infinite',
+                    },
+                    keyframes: {
+                        pulseRed: {
+                            '0%, 100%': { boxShadow: '0 0 15px rgba(255, 0, 85, 0.4)' },
+                            '50%': { boxShadow: '0 0 30px rgba(255, 0, 85, 0.8)' },
+                        },
+                        pulseCyan: {
+                            '0%, 100%': { boxShadow: '0 0 15px rgba(0, 240, 255, 0.4)' },
+                            '50%': { boxShadow: '0 0 30px rgba(0, 240, 255, 0.8)' },
+                        },
+                        float: {
+                            '0%, 100%': { transform: 'translateY(0px)' },
+                            '50%': { transform: 'translateY(-8px)' },
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .glass-panel {
+            background: rgba(15, 23, 42, 0.75);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        .stars-bg {
+            background-image: 
+                radial-gradient(2px 2px at 20px 30px, #ffffff, rgba(0,0,0,0)),
+                radial-gradient(2px 2px at 40px 70px, rgba(255,255,255,0.7), rgba(0,0,0,0)),
+                radial-gradient(1px 1px at 90px 40px, #ffffff, rgba(0,0,0,0)),
+                radial-gradient(2px 2px at 160px 120px, rgba(255,255,255,0.9), rgba(0,0,0,0));
+            background-repeat: repeat;
+            background-size: 200px 200px;
+        }
+    </style>
+</head>
+<body class="h-full stars-bg bg-slate-950 flex flex-col justify-between overflow-x-hidden font-sans selection:bg-cyan-500 selection:text-black">
+
+    <!-- Header Navigation -->
+    <header class="p-4 border-b border-slate-800 glass-panel flex justify-between items-center z-20">
+        <div class="flex items-center space-x-3">
+            <i class="fa-solid fa-user-ninja text-cyan-400 text-2xl animate-float"></i>
+            <h1 class="font-orbitron font-bold text-xl tracking-wider text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-indigo-500">
+                IMPOSTOR<span class="text-xs text-rose-500 font-semibold ml-1">NET</span>
+            </h1>
+        </div>
+        <div id="connectionStatus" class="flex items-center space-x-2 text-xs bg-slate-900 px-3 py-1.5 rounded-full border border-slate-800">
+            <span id="statusDot" class="w-2.5 h-2.5 rounded-full bg-amber-500 animate-ping"></span>
+            <span id="statusText" class="text-slate-400">Connecting to Cloud...</span>
+        </div>
+    </header>
+
+    <!-- Main Content Container -->
+    <main class="flex-grow flex items-center justify-center p-4">
+        
+        <!-- SECTION 1: LOBBY LANDING (Create or Join) -->
+        <section id="viewLanding" class="w-full max-w-md glass-panel p-6 sm:p-8 rounded-2xl shadow-2xl relative overflow-hidden transition-all duration-300">
+            <div class="absolute -top-12 -right-12 w-32 h-32 bg-cyan-500/10 rounded-full blur-2xl"></div>
+            <div class="text-center mb-6">
+                <h2 class="font-orbitron text-2xl font-bold tracking-wide text-white mb-2">SPACESHIP LOBBY</h2>
+                <p class="text-slate-400 text-sm">Join a room or host one to secretly assign crewmates and impostors!</p>
+            </div>
+
+            <form id="joinForm" onsubmit="handleJoinOrCreate(event)" class="space-y-4">
+                <div>
+                    <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Your Name</label>
+                    <input type="text" id="inputPlayerName" required maxlength="12" placeholder="e.g. Captain Red" 
+                        class="w-full bg-slate-900/80 border border-slate-700 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 transition-all">
+                </div>
+
+                <div>
+                    <label class="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">Room Code (Leave blank to Host)</label>
+                    <input type="text" id="inputRoomCode" placeholder="Enter 4-letter Code" uppercase maxlength="6"
+                        class="w-full bg-slate-900/80 border border-slate-700 rounded-xl px-4 py-3 text-white tracking-widest font-mono uppercase placeholder-slate-500 focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 transition-all">
+                </div>
+
+                <div class="pt-2 flex flex-col gap-3">
+                    <button type="submit" id="btnAction" class="w-full py-3.5 px-6 rounded-xl font-orbitron font-bold text-slate-950 bg-gradient-to-r from-cyan-400 to-blue-500 hover:from-cyan-300 hover:to-blue-400 active:scale-[0.98] transition-all shadow-lg shadow-cyan-500/20">
+                        JOIN / CREATE ROOM
+                    </button>
+                </div>
+            </form>
+        </section>
+
+        <!-- SECTION 2: LOBBY ROOM (Waiting & Host Controls) -->
+        <section id="viewLobby" class="hidden w-full max-w-2xl glass-panel p-6 sm:p-8 rounded-2xl shadow-2xl transition-all duration-300 space-y-6">
+            <!-- Room Info Header -->
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+                <div>
+                    <span class="text-xs text-slate-400 font-semibold uppercase tracking-wider">Room Code</span>
+                    <div class="flex items-center gap-3">
+                        <span id="displayRoomCode" class="font-orbitron font-black text-3xl tracking-widest text-cyan-400">----</span>
+                        <button onclick="copyRoomCode()" title="Copy Code" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors">
+                            <i class="fa-regular fa-copy"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="text-left sm:text-right">
+                    <span id="roleBadge" class="inline-block px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-slate-800 text-slate-300">
+                        CREWMATE
+                    </span>
+                    <p id="playerCountText" class="text-xs text-slate-400 mt-1">Connected: 1 player</p>
+                </div>
+            </div>
+
+            <!-- Connected Players Grid -->
+            <div>
+                <h3 class="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-3 flex items-center justify-between">
+                    <span>Crewmates in Room</span>
+                    <span id="connectedCountBadge" class="bg-cyan-500/20 text-cyan-400 text-xs px-2.5 py-0.5 rounded-full font-mono">1</span>
+                </h3>
+                <div id="playerList" class="grid grid-cols-2 sm:grid-cols-3 gap-3 max-h-56 overflow-y-auto p-1">
+                    <!-- Populated dynamically -->
+                </div>
+            </div>
+
+            <!-- Host Config Options (Visible to Host only) -->
+            <div id="hostControls" class="hidden border-t border-slate-800 pt-5 space-y-4">
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-900/60 p-4 rounded-xl border border-slate-800">
+                    <div>
+                        <label class="block font-semibold text-sm text-slate-200">Number of Impostors</label>
+                        <p class="text-xs text-slate-400">Min 3 players needed for 1 Impostor, 4+ for 2.</p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button type="button" onclick="setImpostors(1)" id="btnImp1" class="px-4 py-2 rounded-lg font-orbitron text-sm font-bold border border-rose-500/50 bg-rose-500/20 text-rose-300 transition-all">1</button>
+                        <button type="button" onclick="setImpostors(2)" id="btnImp2" class="px-4 py-2 rounded-lg font-orbitron text-sm font-bold border border-slate-700 bg-slate-800 text-slate-400 hover:border-rose-500/50 transition-all">2</button>
+                    </div>
+                </div>
+
+                <button onclick="startGame()" id="btnStartGame" class="w-full py-4 rounded-xl font-orbitron font-black text-lg tracking-wider text-slate-950 bg-gradient-to-r from-rose-500 via-amber-500 to-rose-500 bg-[length:200%_auto] hover:bg-right transition-all duration-500 shadow-lg shadow-rose-500/20 animate-pulse">
+                    ASSIGN ROLES & START GAME
+                </button>
+            </div>
+
+            <!-- Non-Host Status Message -->
+            <div id="clientWaitMsg" class="text-center py-4 text-slate-400 text-sm italic">
+                Waiting for the Host to configure and start the game...
+            </div>
+        </section>
+
+        <!-- SECTION 3: SECRET ROLE DISPLAY -->
+        <section id="viewRoleReveal" class="hidden w-full max-w-lg glass-panel p-8 rounded-2xl shadow-2xl text-center space-y-6 relative overflow-hidden transition-all duration-500">
+            <!-- Background Glow Dynamic -->
+            <div id="roleGlow" class="absolute inset-0 pointer-events-none transition-all duration-700"></div>
+
+            <div class="relative z-10 space-y-4">
+                <span class="text-xs uppercase tracking-widest font-bold text-slate-400">Secret Directive</span>
+                
+                <div id="roleIcon" class="text-6xl my-4">
+                    <!-- Icon inject -->
+                </div>
+
+                <h2 id="roleTitle" class="font-orbitron font-black text-4xl sm:text-5xl tracking-widest">
+                    ---
+                </h2>
+
+                <p id="roleDescription" class="text-slate-300 text-sm max-w-sm mx-auto leading-relaxed">
+                    --
+                </p>
+
+                <!-- Teammates List (For Impostors when 2 selected) -->
+                <div id="impostorTeammatesBox" class="hidden bg-slate-950/80 p-3 rounded-xl border border-rose-500/30 text-xs text-rose-300">
+                    <span>Fellow Impostor: </span>
+                    <span id="impostorTeammateName" class="font-bold">--</span>
+                </div>
+
+                <div class="pt-4">
+                    <button onclick="enterDiscussionPhase()" class="px-8 py-3 rounded-xl font-orbitron font-bold text-sm bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white transition-all">
+                        ENTER DISCUSSION / GAME SCREEN
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- SECTION 4: DISCUSSION / GAME DASHBOARD -->
+        <section id="viewDiscussion" class="hidden w-full max-w-2xl glass-panel p-6 sm:p-8 rounded-2xl shadow-2xl space-y-6">
+            <div class="flex items-center justify-between pb-4 border-b border-slate-800">
+                <div>
+                    <h2 class="font-orbitron font-bold text-xl text-white">IRL DISCUSSION PHASE</h2>
+                    <p class="text-xs text-slate-400">Debate out loud with your voice! Track votes or timer below.</p>
+                </div>
+                <div class="text-right">
+                    <span id="myRoleTag" class="text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wider">
+                        --
+                    </span>
+                </div>
+            </div>
+
+            <!-- Discussion Timer -->
+            <div class="bg-slate-900/80 border border-slate-800 p-6 rounded-2xl text-center space-y-3">
+                <div class="font-orbitron font-black text-5xl tracking-wider text-cyan-400" id="timerDisplay">
+                    02:00
+                </div>
+                <div class="flex justify-center gap-2">
+                    <button onclick="startTimer()" class="px-4 py-1.5 rounded-lg text-xs font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 hover:bg-cyan-500/30 transition-all">Start Timer</button>
+                    <button onclick="pauseTimer()" class="px-4 py-1.5 rounded-lg text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30 transition-all">Pause</button>
+                    <button onclick="resetTimer()" class="px-4 py-1.5 rounded-lg text-xs font-bold bg-slate-800 text-slate-300 border border-slate-700 hover:bg-slate-700 transition-all">Reset</button>
+                </div>
+            </div>
+
+            <!-- Player Status / Elimination Tracker -->
+            <div>
+                <h3 class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Live Roster & Suspect Tracker</h3>
+                <div id="discussionPlayerGrid" class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <!-- Dynamic player tiles -->
+                </div>
+            </div>
+
+            <!-- Host Actions End Game / Restart -->
+            <div id="hostGameActions" class="hidden border-t border-slate-800 pt-5 flex flex-col sm:flex-row gap-3">
+                <button onclick="revealAllRoles()" class="flex-1 py-3 rounded-xl font-orbitron font-bold text-xs bg-slate-800 hover:bg-slate-700 text-amber-400 border border-amber-500/30 transition-all">
+                    REVEAL ALL ROLES
+                </button>
+                <button onclick="startGame()" class="flex-1 py-3 rounded-xl font-orbitron font-bold text-xs bg-cyan-500 hover:bg-cyan-400 text-slate-950 transition-all">
+                    START NEW ROUND
+                </button>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="p-3 text-center text-xs text-slate-600 glass-panel border-t border-slate-800/80">
+        PeerJS Cloud WebRTC • No external backend server required
+    </footer>
+
+    <!-- Audio Effects (Web Audio API Synthesizer) -->
+    <script>
+        // Simple Audio FX generator using Web Audio API
+        const AudioFX = {
+            ctx: null,
+            init() {
+                if (!this.ctx) {
+                    this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+                }
+            },
+            playCrewmateSound() {
+                this.init();
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(440, this.ctx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(880, this.ctx.currentTime + 0.3);
+                gain.gain.setValueAtTime(0.3, this.ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.3);
+                osc.connect(gain);
+                gain.connect(this.ctx.destination);
+                osc.start();
+                osc.stop(this.ctx.currentTime + 0.3);
+            },
+            playImpostorSound() {
+                this.init();
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(180, this.ctx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(80, this.ctx.currentTime + 0.6);
+                gain.gain.setValueAtTime(0.4, this.ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.6);
+                osc.connect(gain);
+                gain.connect(this.ctx.destination);
+                osc.start();
+                osc.stop(this.ctx.currentTime + 0.6);
+            }
+        };
+
+        // Application State
+        let peer = null;
+        let isHost = false;
+        let roomCode = '';
+        let myName = '';
+        let myPeerId = '';
+        let myRole = 'CREWMATE';
+        let impostorCount = 1;
+        let timerInterval = null;
+        let timerSeconds = 120;
+
+        // Host connections map: peerId -> { name, conn }
+        const connections = new Map();
+        // Host storage of connected players: array of { peerId, name }
+        let players = [];
+
+        // PeerJS Setup
+        function initPeer() {
+            // Generate standard peer or custom ID prefix
+            peer = new Peer();
+
+            peer.on('open', (id) => {
+                myPeerId = id;
+                document.getElementById('statusDot').className = "w-2.5 h-2.5 rounded-full bg-emerald-500";
+                document.getElementById('statusText').innerText = "Connected to Cloud";
+            });
+
+            peer.on('connection', (conn) => {
+                if (isHost) {
+                    handleHostIncomingConnection(conn);
+                }
+            });
+
+            peer.on('error', (err) => {
+                console.error("PeerJS Error:", err);
+                showToast("Connection Error: " + err.type, "error");
+            });
+        }
+
+        // Generate short 4-character room code
+        function generateRoomCode() {
+            const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+            let code = '';
+            for (let i = 0; i < 4; i++) {
+                code += chars.charAt(Math.floor(Math.random() * chars.length));
+            }
+            return code;
+        }
+
+        // Handle Join / Create Room button
+        function handleJoinOrCreate(e) {
+            e.preventDefault();
+            myName = document.getElementById('inputPlayerName').value.trim();
+            const inputCode = document.getElementById('inputRoomCode').value.trim().toUpperCase();
+
+            if (!myName) {
+                showToast("Please enter your name", "warning");
+                return;
+            }
+
+            if (!inputCode) {
+                // Host a new game
+                isHost = true;
+                roomCode = generateRoomCode();
+                setupHostRoom();
+            } else {
+                // Join existing room
+                isHost = false;
+                roomCode = inputCode;
+                joinHostRoom(roomCode);
+            }
+        }
+
+        // Host Room Setup
+        function setupHostRoom() {
+            // Re-initialize peer with specific ID format for host room code
+            const hostPeerId = "impostor-room-" + roomCode;
+            
+            if (peer) peer.destroy();
+
+            peer = new Peer(hostPeerId);
+
+            peer.on('open', () => {
+                document.getElementById('displayRoomCode').innerText = roomCode;
+                document.getElementById('roleBadge').innerText = "HOST";
+                document.getElementById('roleBadge').className = "inline-block px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-purple-500/20 text-purple-300 border border-purple-500/30";
+                document.getElementById('hostControls').classList.remove('hidden');
+                document.getElementById('clientWaitMsg').classList.add('hidden');
+                document.getElementById('hostGameActions').classList.remove('hidden');
+
+                // Add self to players
+                players = [{ peerId: 'host-local', name: myName }];
+                updatePlayerListUI();
+
+                switchView('viewLobby');
+            });
+
+            peer.on('connection', (conn) => {
+                handleHostIncomingConnection(conn);
+            });
+
+            peer.on('error', (err) => {
+                if (err.type === 'unavailable-id') {
+                    showToast("Room code collision! Trying another code...", "warning");
+                    roomCode = generateRoomCode();
+                    setupHostRoom();
+                } else {
+                    showToast("Error hosting room: " + err.message, "error");
+                }
+            });
+        }
+
+        // Client Joining Host Room
+        function joinHostRoom(code) {
+            const hostPeerId = "impostor-room-" + code;
+            const conn = peer.connect(hostPeerId, { metadata: { name: myName } });
+
+            conn.on('open', () => {
+                document.getElementById('displayRoomCode').innerText = code;
+                document.getElementById('roleBadge').innerText = "PLAYER";
+                document.getElementById('hostControls').classList.add('hidden');
+                document.getElementById('clientWaitMsg').classList.remove('hidden');
+                document.getElementById('hostGameActions').classList.add('hidden');
+
+                switchView('viewLobby');
+
+                // Send join payload
+                conn.send({ type: 'JOIN', name: myName });
+            });
+
+            conn.on('data', (data) => {
+                handleClientMessage(data);
+            });
+
+            conn.on('close', () => {
+                showToast("Disconnected from host", "error");
+            });
+
+            // Handle host connection timeout
+            setTimeout(() => {
+                if (!conn.open) {
+                    showToast("Could not find room with code: " + code, "error");
+                }
+            }, 5000);
+        }
+
+        // Host handles incoming client connections
+        function handleHostIncomingConnection(conn) {
+            conn.on('open', () => {
+                // Connection open
+            });
+
+            conn.on('data', (data) => {
+                if (data.type === 'JOIN') {
+                    connections.set(conn.peer, { name: data.name, conn: conn });
+                    
+                    // Rebuild players list
+                    players = [{ peerId: 'host-local', name: myName }];
+                    connections.forEach((val, id) => {
+                        players.push({ peerId: id, name: val.name });
+                    });
+
+                    updatePlayerListUI();
+                    broadcastPlayerList();
+                }
+            });
+
+            conn.on('close', () => {
+                connections.delete(conn.peer);
+                players = [{ peerId: 'host-local', name: myName }];
+                connections.forEach((val, id) => {
+                    players.push({ peerId: id, name: val.name });
+                });
+                updatePlayerListUI();
+                broadcastPlayerList();
+            });
+        }
+
+        // Broadcast current player list to all connected clients
+        function broadcastPlayerList() {
+            const payload = {
+                type: 'PLAYER_LIST_UPDATE',
+                players: players.map(p => p.name)
+            };
+            connections.forEach((client) => {
+                client.conn.send(payload);
+            });
+        }
+
+        // Handle client side data messages
+        function handleClientMessage(data) {
+            if (data.type === 'PLAYER_LIST_UPDATE') {
+                updateClientPlayerList(data.players);
+            } else if (data.type === 'ROLE_ASSIGNMENT') {
+                myRole = data.role;
+                displayRoleReveal(data.role, data.teammate);
+            } else if (data.type === 'REVEAL_ALL') {
+                displayRevealedRoles(data.rolesMap);
+            }
+        }
+
+        // UI Updates for Player Lists
+        function updatePlayerListUI() {
+            const listEl = document.getElementById('playerList');
+            const countEl = document.getElementById('connectedCountBadge');
+            const countText = document.getElementById('playerCountText');
+
+            countEl.innerText = players.length;
+            countText.innerText = `Connected: ${players.length} player${players.length > 1 ? 's' : ''}`;
+
+            listEl.innerHTML = players.map(p => `
+                <div class="bg-slate-900/80 border border-slate-800 p-3 rounded-xl flex items-center space-x-2">
+                    <div class="w-2.5 h-2.5 rounded-full bg-cyan-400"></div>
+                    <span class="text-sm font-semibold truncate text-slate-200">${escapeHtml(p.name)}</span>
+                </div>
+            `).join('');
+        }
+
+        function updateClientPlayerList(playerNames) {
+            const listEl = document.getElementById('playerList');
+            const countEl = document.getElementById('connectedCountBadge');
+            const countText = document.getElementById('playerCountText');
+
+            countEl.innerText = playerNames.length;
+            countText.innerText = `Connected: ${playerNames.length} player${playerNames.length > 1 ? 's' : ''}`;
+
+            listEl.innerHTML = playerNames.map(name => `
+                <div class="bg-slate-900/80 border border-slate-800 p-3 rounded-xl flex items-center space-x-2">
+                    <div class="w-2.5 h-2.5 rounded-full bg-cyan-400"></div>
+                    <span class="text-sm font-semibold truncate text-slate-200">${escapeHtml(name)}</span>
+                </div>
+            `).join('');
+        }
+
+        // Set Impostor Count Toggle
+        function setImpostors(num) {
+            impostorCount = num;
+            const b1 = document.getElementById('btnImp1');
+            const b2 = document.getElementById('btnImp2');
+
+            if (num === 1) {
+                b1.className = "px-4 py-2 rounded-lg font-orbitron text-sm font-bold border border-rose-500/50 bg-rose-500/20 text-rose-300 transition-all";
+                b2.className = "px-4 py-2 rounded-lg font-orbitron text-sm font-bold border border-slate-700 bg-slate-800 text-slate-400 hover:border-rose-500/50 transition-all";
+            } else {
+                b2.className = "px-4 py-2 rounded-lg font-orbitron text-sm font-bold border border-rose-500/50 bg-rose-500/20 text-rose-300 transition-all";
+                b1.className = "px-4 py-2 rounded-lg font-orbitron text-sm font-bold border border-slate-700 bg-slate-800 text-slate-400 hover:border-rose-500/50 transition-all";
+            }
+        }
+
+        // Start Game & Distribute Roles (Host Only)
+        function startGame() {
+            if (players.length < 3 && impostorCount === 1) {
+                showToast("Need at least 3 players for 1 Impostor game!", "warning");
+                return;
+            }
+            if (players.length < 4 && impostorCount === 2) {
+                showToast("Need at least 4 players for 2 Impostors game!", "warning");
+                return;
+            }
+
+            // Shuffle array helper
+            const shuffled = [...players].sort(() => 0.5 - Math.random());
+            const impostors = shuffled.slice(0, impostorCount);
+            const impostorPeerIds = impostors.map(p => p.peerId);
+
+            // Assign role locally or send to clients
+            players.forEach(p => {
+                const isImp = impostorPeerIds.includes(p.peerId);
+                const assignedRole = isImp ? 'IMPOSTOR' : 'CREWMATE';
+
+                // Find teammate if 2 impostors
+                let teammateName = null;
+                if (isImp && impostorCount === 2) {
+                    const teammate = impostors.find(imp => imp.peerId !== p.peerId);
+                    if (teammate) teammateName = teammate.name;
+                }
+
+                if (p.peerId === 'host-local') {
+                    myRole = assignedRole;
+                    displayRoleReveal(assignedRole, teammateName);
+                } else {
+                    const clientConn = connections.get(p.peerId);
+                    if (clientConn && clientConn.conn.open) {
+                        clientConn.conn.send({
+                            type: 'ROLE_ASSIGNMENT',
+                            role: assignedRole,
+                            teammate: teammateName
+                        });
+                    }
+                }
+            });
+        }
+
+        // Display Secret Role Screen
+        function displayRoleReveal(role, teammate) {
+            switchView('viewRoleReveal');
+
+            const title = document.getElementById('roleTitle');
+            const desc = document.getElementById('roleDescription');
+            const icon = document.getElementById('roleIcon');
+            const glow = document.getElementById('roleGlow');
+            const teamBox = document.getElementById('impostorTeammatesBox');
+
+            teamBox.classList.add('hidden');
+
+            if (role === 'IMPOSTOR') {
+                AudioFX.playImpostorSound();
+                title.innerText = "YOU ARE THE IMPOSTOR";
+                title.className = "font-orbitron font-black text-3xl sm:text-4xl tracking-widest text-rose-500 animate-pulse";
+                desc.innerText = "Blend in, act innocent, fake tasks, and eliminate crewmates without getting caught!";
+                icon.innerHTML = `<i class="fa-solid fa-user-ninja text-rose-500 animate-bounce"></i>`;
+                glow.className = "absolute inset-0 bg-rose-500/10 rounded-2xl filter blur-xl animate-pulse-glow-red";
+
+                if (teammate) {
+                    teamBox.classList.remove('hidden');
+                    document.getElementById('impostorTeammateName').innerText = teammate;
+                }
+            } else {
+                AudioFX.playCrewmateSound();
+                title.innerText = "YOU ARE CREWMATE";
+                title.className = "font-orbitron font-black text-3xl sm:text-4xl tracking-widest text-cyan-400";
+                desc.innerText = "Find out who the Impostor is through voice discussions and vote them out!";
+                icon.innerHTML = `<i class="fa-solid fa-user-astronaut text-cyan-400 animate-bounce"></i>`;
+                glow.className = "absolute inset-0 bg-cyan-500/10 rounded-2xl filter blur-xl animate-pulse-glow-cyan";
+            }
+        }
+
+        // Enter Discussion View
+        function enterDiscussionPhase() {
+            switchView('viewDiscussion');
+            
+            // Set role tag header
+            const roleTag = document.getElementById('myRoleTag');
+            if (myRole === 'IMPOSTOR') {
+                roleTag.innerText = "IMPOSTOR";
+                roleTag.className = "text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wider bg-rose-500/20 text-rose-400 border border-rose-500/30";
+            } else {
+                roleTag.innerText = "CREWMATE";
+                roleTag.className = "text-xs font-bold px-3 py-1 rounded-full uppercase tracking-wider bg-cyan-500/20 text-cyan-400 border border-cyan-500/30";
+            }
+
+            // Populate discussion grid
+            const grid = document.getElementById('discussionPlayerGrid');
+            grid.innerHTML = players.map(p => `
+                <div class="bg-slate-900/80 border border-slate-800 p-4 rounded-xl flex items-center justify-between">
+                    <span class="font-semibold text-slate-200">${escapeHtml(p.name)}</span>
+                    <button onclick="toggleElimination(this)" class="px-3 py-1 rounded-lg text-xs font-bold bg-slate-800 text-slate-400 hover:bg-rose-500/20 hover:text-rose-300 transition-all">
+                        Suspect / Out
+                    </button>
+                </div>
+            `).join('');
+        }
+
+        // Toggle suspect or out button on discussion screen
+        function toggleElimination(btn) {
+            if (btn.classList.contains('bg-rose-500/20')) {
+                btn.className = "px-3 py-1 rounded-lg text-xs font-bold bg-slate-800 text-slate-400 hover:bg-rose-500/20 hover:text-rose-300 transition-all";
+                btn.innerText = "Suspect / Out";
+            } else {
+                btn.className = "px-3 py-1 rounded-lg text-xs font-bold bg-rose-500/30 text-rose-300 border border-rose-500/40 transition-all";
+                btn.innerText = "ELIMINATED";
+            }
+        }
+
+        // Discussion Timer Logic
+        function startTimer() {
+            if (timerInterval) clearInterval(timerInterval);
+            timerInterval = setInterval(() => {
+                if (timerSeconds > 0) {
+                    timerSeconds--;
+                    updateTimerDisplay();
+                } else {
+                    clearInterval(timerInterval);
+                    showToast("Discussion Time Ended!", "warning");
+                }
+            }, 1000);
+        }
+
+        function pauseTimer() {
+            clearInterval(timerInterval);
+        }
+
+        function resetTimer() {
+            clearInterval(timerInterval);
+            timerSeconds = 120;
+            updateTimerDisplay();
+        }
+
+        function updateTimerDisplay() {
+            const mins = Math.floor(timerSeconds / 60).toString().padStart(2, '0');
+            const secs = (timerSeconds % 60).toString().padStart(2, '0');
+            document.getElementById('timerDisplay').innerText = `${mins}:${secs}`;
+        }
+
+        // Host Reveals All Roles
+        function revealAllRoles() {
+            // Unimplemented optional reveal broadcast
+            showToast("Roles revealed in discussion view", "info");
+        }
+
+        // Utility: Copy Room Code
+        function copyRoomCode() {
+            navigator.clipboard.writeText(roomCode);
+            showToast("Room code copied to clipboard!", "info");
+        }
+
+        // Utility: View Switching
+        function switchView(viewId) {
+            ['viewLanding', 'viewLobby', 'viewRoleReveal', 'viewDiscussion'].forEach(id => {
+                document.getElementById(id).classList.add('hidden');
+            });
+            document.getElementById(viewId).classList.remove('hidden');
+        }
+
+        // Toast Messages
+        function showToast(message, type = "info") {
+            const toast = document.createElement('div');
+            let bgColor = "bg-slate-800 border-slate-700 text-slate-200";
+            if (type === "error") bgColor = "bg-rose-900/90 border-rose-700 text-rose-100";
+            if (type === "warning") bgColor = "bg-amber-900/90 border-amber-700 text-amber-100";
+
+            toast.className = `fixed bottom-6 right-6 px-4 py-3 rounded-xl border ${bgColor} text-xs font-semibold shadow-2xl z-50 transition-all duration-300 transform translate-y-2 opacity-0`;
+            toast.innerText = message;
+
+            document.body.appendChild(toast);
+
+            setTimeout(() => {
+                toast.classList.remove('translate-y-2', 'opacity-0');
+            }, 10);
+
+            setTimeout(() => {
+                toast.classList.add('opacity-0');
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
+        function escapeHtml(str) {
+            return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        }
+
+        // On Load Init
+        window.onload = function() {
+            initPeer();
+        };
+    </script>
+</body>
+</html>
