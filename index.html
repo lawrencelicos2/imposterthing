@@ -8,41 +8,66 @@
   :root { --bg:#0f1115; --panel:#181b22; --line:#2a2f3a; --text:#e8eaf0; --dim:#8b93a5; --accent:#6c8cff; }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font:15px system-ui,sans-serif; height:100dvh; display:flex; justify-content:center; }
-  #app { width:100%; max-width:560px; display:flex; flex-direction:column; padding:12px; gap:10px; height:100%; }
+  #app { width:100%; max-width:560px; display:flex; flex-direction:column; padding:12px; gap:10px; height:100%; overflow-y:auto; }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px; }
+  h2,h3 { margin:0 0 8px; } h3 { font-size:14px; color:var(--dim); font-weight:600; }
   input,button { font:inherit; color:var(--text); background:#0f1218; border:1px solid var(--line); border-radius:8px; padding:9px 11px; }
   button { cursor:pointer; } button:hover { border-color:var(--accent); } button:disabled { opacity:.4; cursor:default; }
   .primary { background:var(--accent); border-color:var(--accent); color:#fff; }
-  #join { margin:auto 0; display:flex; flex-direction:column; gap:10px; }
+  #menu { display:flex; flex-direction:column; gap:10px; }
   #game { display:none; flex-direction:column; gap:10px; flex:1; min-height:0; }
   .row { display:flex; gap:8px; align-items:center; }
-  .row > input { flex:1; min-width:0; }
+  .row > input:not([type=checkbox]) { flex:1; min-width:0; }
+  label.chk { display:flex; gap:6px; align-items:center; color:var(--dim); font-size:13px; white-space:nowrap; }
+  label.chk input { padding:0; }
   #hold { font-size:11px; padding:5px 9px; min-width:130px; background:#222; color:#fff; border:1px solid #444; user-select:none; -webkit-user-select:none; touch-action:none; }
-  #hold.on { background:#222; }
   #banner { color:var(--dim); font-size:13px; flex:1; text-align:right; }
   #players { display:flex; flex-direction:column; gap:6px; }
   .p { display:flex; align-items:center; gap:8px; }
   .p .n { flex:1; } .p.out .n { text-decoration:line-through; color:var(--dim); }
   .badge { font-size:12px; color:var(--dim); min-width:24px; text-align:right; }
-  #chat { flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:4px; }
+  #chat { flex:1; min-height:80px; overflow-y:auto; display:flex; flex-direction:column; gap:4px; }
   .m b { color:var(--accent); } .m.sys { color:var(--dim); font-style:italic; }
   #err { color:#ff7a7a; font-size:13px; min-height:1em; }
+  .room { display:flex; align-items:center; gap:8px; padding:6px 0; border-top:1px solid var(--line); }
+  .room:first-child { border-top:0; } .room .t { flex:1; } .room small { color:var(--dim); display:block; }
+  .empty { color:var(--dim); font-size:13px; }
 </style>
 </head>
 <body>
 <div id="app">
-  <div id="join" class="card">
-    <h2 style="margin:0">Imposter</h2>
-    <input id="name" placeholder="Your name" maxlength="16">
-    <input id="room" placeholder="Room code (share with friends)" maxlength="24">
-    <button id="joinBtn" class="primary">Join</button>
-    <div id="err"></div>
+  <div id="menu">
+    <div class="card">
+      <h2>Imposter</h2>
+      <input id="name" placeholder="Your name" maxlength="16" style="width:100%">
+      <div id="err" style="margin-top:6px"></div>
+    </div>
+    <div class="card">
+      <h3>HOST A GAME</h3>
+      <div class="row">
+        <input id="title" placeholder="Room name (optional)" maxlength="24">
+        <label class="chk"><input type="checkbox" id="pub" checked> Public</label>
+        <button id="hostBtn" class="primary">Host</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>JOIN WITH CODE</h3>
+      <div class="row">
+        <input id="code" placeholder="Room code" maxlength="8" style="text-transform:uppercase">
+        <button id="joinBtn" class="primary">Join</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>PUBLIC ROOMS</h3>
+      <div id="rooms" class="empty">Looking for rooms...</div>
+    </div>
   </div>
 
   <div id="game">
     <div class="card row">
       <button id="hold">hold</button>
       <div id="banner"></div>
+      <button id="leave">Leave</button>
     </div>
     <div class="card">
       <div id="players"></div>
@@ -56,35 +81,207 @@
   </div>
 </div>
 
-<script>
+<script type="module">
+// Serverless: players connect peer-to-peer (WebRTC) using Trystero. The host's browser runs the game.
+const APP = "imposter-html-game-v1";
 const $ = id => document.getElementById(id);
+let joinRoom;
+try { ({ joinRoom } = await import("https://esm.run/trystero")); }
+catch { $("err").textContent = "Couldn't load the multiplayer library. Check your internet."; }
+
+const WORDS = ["pizza","umbrella","guitar","volcano","bicycle","pirate","snowman","telescope","banana","castle","robot","submarine","cactus","backpack","lighthouse","trampoline","octopus","skateboard","campfire","helicopter","sandwich","penguin","toothbrush","rocket","scarecrow","vending machine","waterfall","clock tower","hot air balloon","ice cream"];
 const myId = localStorage.getItem("imp_id") || (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));
 localStorage.setItem("imp_id", myId);
 $("name").value = localStorage.getItem("imp_name") || "";
-$("room").value = new URLSearchParams(location.search).get("room") || localStorage.getItem("imp_room") || "";
 
-let ws, S = null, got = 0, name, room, holding = false;
+let name, roomCode, room, txRaw, isHost = false, hostPeer = null, H = null;
+let S = null, got = 0, holding = false, joinTimer = null;
 
-$("joinBtn").onclick = () => {
-  name = $("name").value.trim(); room = $("room").value.trim().toLowerCase();
-  if (!name || !room) { $("err").textContent = "Enter a name and room code."; return; }
-  localStorage.setItem("imp_name", name); localStorage.setItem("imp_room", room);
-  connect();
-};
-
-function connect() {
-  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws?room=" + encodeURIComponent(room));
-  ws.onopen = () => ws.send(JSON.stringify({ type: "join", id: myId, name }));
-  ws.onmessage = e => {
-    const m = JSON.parse(e.data);
-    if (m.type === "state") { S = m; got = Date.now(); $("join").style.display = "none"; $("game").style.display = "flex"; render(); }
-    else if (m.type === "chat") addChat(m);
-    else if (m.type === "error") { $("err").textContent = m.text; addChat({ sys: true, text: m.text }); }
-  };
-  ws.onclose = () => { if (S) setTimeout(connect, 1500); };
+// ---------- public room list (a shared discovery room everyone on the menu sits in) ----------
+let lobby = null, sendAd = null; const ads = new Map();
+function lobbyJoin() {
+  if (lobby || !joinRoom) return;
+  lobby = joinRoom({ appId: APP }, "public-lobby");
+  const [s, r] = lobby.makeAction("ad"); sendAd = s;
+  r(d => { if (d && d.code) ads.set(String(d.code), { code: String(d.code), title: String(d.title || ""), host: String(d.host || ""), count: +d.count || 0, t: Date.now() }); });
+  lobby.onPeerJoin(p => advertise(p));
 }
-const send = o => ws && ws.readyState === 1 && ws.send(JSON.stringify(o));
+function lobbyLeave() { if (lobby) { lobby.leave(); lobby = null; } }
+function advertise(peer) {
+  if (!lobby || !H || !H.public || H.phase !== "lobby" || hOnline().length >= 12) return;
+  sendAd({ code: roomCode, title: H.title, host: name, count: hOnline().length }, peer || undefined);
+}
+setInterval(() => advertise(), 3000);
+function renderRooms() {
+  if ($("menu").style.display === "none") return;
+  const now = Date.now(), box = $("rooms"); box.innerHTML = "";
+  const list = [...ads.values()].filter(a => now - a.t < 9000);
+  if (!list.length) { box.className = "empty"; box.textContent = "No public rooms right now. Host one!"; return; }
+  box.className = "";
+  list.forEach(r => {
+    const d = document.createElement("div"); d.className = "room";
+    const t = document.createElement("div"); t.className = "t";
+    t.textContent = r.title || "Room " + r.code.toUpperCase();
+    const s = document.createElement("small"); s.textContent = "host: " + r.host + " · " + r.count + "/12";
+    t.append(s);
+    const b = document.createElement("button"); b.textContent = "Join";
+    b.onclick = () => { if (getName()) enter(r.code, false); };
+    d.append(t, b); box.append(d);
+  });
+}
+setInterval(renderRooms, 1000);
 
+// ---------- menu ----------
+function getName() {
+  name = $("name").value.trim();
+  if (!name) { $("err").textContent = "Enter a name first."; return false; }
+  localStorage.setItem("imp_name", name); $("err").textContent = ""; return true;
+}
+const newCode = () => Array.from({ length: 5 }, () => "ABCDEFGHJKLMNPQRSTUVWXYZ"[Math.floor(Math.random() * 24)]).join("");
+$("hostBtn").onclick = () => { if (getName()) enter(newCode(), true, { public: $("pub").checked, title: $("title").value.trim() }); };
+$("joinBtn").onclick = () => { const c = $("code").value.trim(); if (getName() && c) enter(c, false); };
+$("leave").onclick = () => leaveToMenu("");
+
+function showGame() { $("menu").style.display = "none"; $("game").style.display = "flex"; }
+function leaveToMenu(msg) {
+  clearTimeout(joinTimer);
+  if (H) { H.timer && clearTimeout(H.timer.h); }
+  try { room && room.leave(); } catch {}
+  room = null; S = null; H = null; isHost = false; hostPeer = null;
+  $("game").style.display = "none"; $("menu").style.display = "flex"; $("chat").innerHTML = "";
+  $("err").textContent = msg || ""; lobbyJoin(); renderRooms();
+}
+
+function enter(code, create, o = {}) {
+  if (!joinRoom) return;
+  roomCode = code.toLowerCase();
+  if (!(create && o.public)) lobbyLeave();
+  room = joinRoom({ appId: APP }, "imp-" + roomCode);
+  const [tx, rx] = room.makeAction("msg"); txRaw = tx;
+  isHost = create;
+  rx((m, peer) => {
+    if (!m || typeof m !== "object") return;
+    if (isHost) return hostHandle(m, peer);
+    if (!["state", "chat", "error"].includes(m.type)) return;
+    if (hostPeer && peer !== hostPeer) return;
+    if (m.type !== "chat") hostPeer = peer;
+    recv(m);
+  });
+  room.onPeerLeave(peer => {
+    if (isHost) return hostLeft(peer);
+    if (peer === hostPeer) leaveToMenu("The host left the game.");
+  });
+  if (create) {
+    H = { players: new Map(), votes: new Map(), phase: "lobby", timer: null, imposter: null, word: null, result: null, public: !!o.public, title: o.title.replace(/[<>]/g, "") };
+    H.players.set(myId, { id: myId, name: clean(name), peer: "self", out: false });
+    showGame(); hSync(); advertise();
+  } else {
+    $("err").textContent = "Connecting...";
+    room.onPeerJoin(peer => txRaw({ type: "join", id: myId, name }, peer));
+    joinTimer = setTimeout(() => { if (!S) leaveToMenu("Room not found (or its host is offline)."); }, 15000);
+  }
+}
+const clean = s => String(s || "").replace(/[<>]/g, "").trim().slice(0, 16) || "Player";
+const tx = o => isHost ? hostHandle(o, "self") : (hostPeer && txRaw(o, hostPeer));
+
+// ---------- host-side game logic (runs in the host's browser) ----------
+const hOnline = () => H ? [...H.players.values()].filter(p => p.peer) : [];
+const hActive = () => hOnline().filter(p => !p.out);
+function hsend(p, m) { if (p.peer === "self") recv(m); else if (p.peer) txRaw(m, p.peer); }
+function hchat(m) { hOnline().forEach(p => hsend(p, { type: "chat", ...m })); }
+const hsys = text => hchat({ sys: true, text });
+function hClear() { if (H.timer) clearTimeout(H.timer.h); H.timer = null; }
+
+function hostHandle(m, peer) {
+  if (!H) return;
+  if (m.type === "join") {
+    const id = String(m.id || "").slice(0, 40), nm = clean(m.name);
+    if (!id) return;
+    const ex = H.players.get(id);
+    if (ex) { if (ex.peer === "self") return; ex.peer = peer; ex.name = nm; }
+    else {
+      if (H.phase === "playing") return txRaw({ type: "error", text: "Game in progress." }, peer);
+      if (H.players.size >= 12) return txRaw({ type: "error", text: "Room is full." }, peer);
+      H.players.set(id, { id, name: nm, peer, out: false }); hsys(nm + " joined");
+    }
+    hRecheck(); hSync(); return;
+  }
+  const p = [...H.players.values()].find(x => x.peer === peer);
+  if (!p) return;
+  if (m.type === "chat") {
+    const text = String(m.text || "").trim().slice(0, 200);
+    if (text) hchat({ name: p.name, text });
+  } else if (m.type === "start") {
+    if (p.id !== myId || H.phase === "playing") return;
+    for (const [id, x] of H.players) if (!x.peer) H.players.delete(id);
+    if (H.players.size < 3) return;
+    const ids = [...H.players.keys()];
+    H.imposter = ids[Math.floor(Math.random() * ids.length)];
+    H.word = WORDS[Math.floor(Math.random() * WORDS.length)];
+    for (const x of H.players.values()) x.out = false;
+    H.votes.clear(); hClear(); H.result = null; H.phase = "playing";
+    hsys("Game started! Hold the button to see your role. Discuss, then vote.");
+    hSync();
+  } else if (m.type === "vote" && H.phase === "playing") {
+    const t = H.players.get(m.target);
+    if (p.out || !t || t.out || t.id === p.id) return;
+    H.votes.set(p.id, t.id); hRecheck(); hSync();
+  } else if (m.type === "unvote" && H.phase === "playing") {
+    H.votes.delete(p.id); hRecheck(); hSync();
+  }
+}
+
+function hostLeft(peer) {
+  const p = [...H.players.values()].find(x => x.peer === peer);
+  if (!p) return;
+  p.peer = null;
+  if (H.phase !== "playing") H.players.delete(p.id);
+  hsys(p.name + " left"); H.votes.delete(p.id); hRecheck(); hSync();
+}
+
+// majority rule: (active players - 1) votes on one person, held for 5s
+function hRecheck() {
+  if (H.phase !== "playing") return hClear();
+  const act = hActive(), need = act.length - 1, ids = new Set(act.map(p => p.id)), counts = {};
+  for (const [v, t] of H.votes) if (ids.has(v) && ids.has(t)) counts[t] = (counts[t] || 0) + 1;
+  const hit = Object.keys(counts).find(t => need >= 2 && counts[t] >= need);
+  if (!hit) return hClear();
+  if (H.timer && H.timer.target === hit) return;
+  hClear();
+  H.timer = { target: hit, endsAt: Date.now() + 5000, h: setTimeout(() => hResolve(hit), 5000) };
+}
+function hResolve(t) {
+  H.timer = null;
+  const p = H.players.get(t);
+  if (!p || H.phase !== "playing") return;
+  p.out = true; H.votes.clear();
+  const imp = H.players.get(H.imposter);
+  if (t === H.imposter) return hEnd("crew", `${p.name} was the IMPOSTER. Crewmates win! The word was "${H.word}".`);
+  hsys(`${p.name} was voted out. They were NOT the imposter.`);
+  if ([...H.players.values()].filter(x => !x.out).length <= 2)
+    return hEnd("imposter", `Imposter wins! It was ${imp.name}. The word was "${H.word}".`);
+  hSync();
+}
+function hEnd(winner, text) { H.phase = "ended"; H.result = { winner, text }; hClear(); hsys(text); hSync(); }
+function hSync() {
+  const list = [...H.players.values()].map(p => ({ id: p.id, name: p.name, out: p.out, on: !!p.peer }));
+  const votes = Object.fromEntries(H.votes);
+  for (const p of hOnline()) {
+    const m = { type: "state", phase: H.phase, you: p.id, host: myId, players: list, votes,
+      timer: H.timer ? { target: H.timer.target, ms: Math.max(0, H.timer.endsAt - Date.now()) } : null };
+    if (H.phase !== "lobby") { const imp = p.id === H.imposter; m.role = imp ? "imposter" : "crewmate"; m.word = imp ? null : H.word; }
+    if (H.phase === "ended") m.result = H.result;
+    hsend(p, m);
+  }
+  advertise();
+}
+
+// ---------- client ----------
+function recv(m) {
+  if (m.type === "state") { S = m; got = Date.now(); clearTimeout(joinTimer); $("err").textContent = ""; showGame(); render(); }
+  else if (m.type === "chat") addChat(m);
+  else if (m.type === "error") leaveToMenu(m.text);
+}
 function addChat(m) {
   const d = document.createElement("div");
   d.className = "m" + (m.sys ? " sys" : "");
@@ -92,9 +289,8 @@ function addChat(m) {
   else { const b = document.createElement("b"); b.textContent = m.name + ": "; d.append(b, document.createTextNode(m.text)); }
   const c = $("chat"); c.append(d); c.scrollTop = c.scrollHeight;
 }
-
-$("chatForm").onsubmit = e => { e.preventDefault(); const t = $("msg").value.trim(); if (t) send({ type: "chat", text: t }); $("msg").value = ""; };
-$("start").onclick = () => send({ type: "start" });
+$("chatForm").onsubmit = e => { e.preventDefault(); const t = $("msg").value.trim(); if (t) tx({ type: "chat", text: t }); $("msg").value = ""; };
+$("start").onclick = () => tx({ type: "start" });
 
 // Hold-to-reveal role: small, all white, only while pressed
 const hold = $("hold");
@@ -124,7 +320,7 @@ function render() {
       const b = document.createElement("button");
       const mine = S.votes[S.you] === p.id;
       b.textContent = mine ? "Remove vote" : "Vote";
-      b.onclick = () => send(mine ? { type: "unvote" } : { type: "vote", target: p.id });
+      b.onclick = () => tx(mine ? { type: "unvote" } : { type: "vote", target: p.id });
       row.append(b);
     }
     box.append(row);
@@ -136,20 +332,22 @@ function render() {
   hold.textContent = label();
   tick();
 }
-
 function tick() {
   if (!S) return;
+  const code = roomCode.toUpperCase();
   let t = "";
-  if (S.phase === "lobby") t = "Lobby · need 3+ players · room: " + room;
+  if (S.phase === "lobby") t = "Room " + code + " · need 3+ players";
   else if (S.phase === "ended") t = S.result ? S.result.text : "";
   else if (S.timer) {
     const left = Math.max(0, Math.ceil((S.timer.ms - (Date.now() - got)) / 1000));
     const p = S.players.find(x => x.id === S.timer.target);
     t = "Voting out " + (p ? p.name : "?") + " in " + left + "s";
-  } else t = "Discuss & vote";
+  } else t = "Room " + code + " · discuss & vote";
   $("banner").textContent = t;
 }
 setInterval(tick, 250);
+
+lobbyJoin(); renderRooms();
 </script>
 </body>
 </html>
