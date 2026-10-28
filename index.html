@@ -85,9 +85,25 @@
 // Serverless: players connect peer-to-peer (WebRTC) using Trystero. The host's browser runs the game.
 const APP = "imposter-html-game-v1";
 const $ = id => document.getElementById(id);
-let joinRoom;
-try { ({ joinRoom } = await import("https://esm.run/trystero")); }
-catch { $("err").textContent = "Couldn't load the multiplayer library. Check your internet."; }
+// Buttons work immediately; the networking library loads in the background (tries several CDNs).
+let joinRoom = null, libP = null;
+function loadLib() {
+  if (joinRoom) return Promise.resolve(true);
+  if (!libP) libP = (async () => {
+    const urls = ["https://esm.run/trystero", "https://esm.sh/trystero", "https://cdn.jsdelivr.net/npm/trystero/+esm"];
+    for (const u of urls) {
+      try {
+        const mod = await Promise.race([import(u), new Promise((_, r) => setTimeout(() => r(new Error("timeout")), 8000))]);
+        if (mod.joinRoom) { joinRoom = mod.joinRoom; return true; }
+      } catch {}
+    }
+    return false;
+  })().then(ok => {
+    if (!ok) { libP = null; $("err").textContent = "Couldn't load the multiplayer library (blocked or offline). Try another network."; }
+    return ok;
+  });
+  return libP;
+}
 
 const WORDS = ["pizza","umbrella","guitar","volcano","bicycle","pirate","snowman","telescope","banana","castle","robot","submarine","cactus","backpack","lighthouse","trampoline","octopus","skateboard","campfire","helicopter","sandwich","penguin","toothbrush","rocket","scarecrow","vending machine","waterfall","clock tower","hot air balloon","ice cream"];
 const myId = localStorage.getItem("imp_id") || (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));
@@ -152,8 +168,11 @@ function leaveToMenu(msg) {
   $("err").textContent = msg || ""; lobbyJoin(); renderRooms();
 }
 
-function enter(code, create, o = {}) {
-  if (!joinRoom) return;
+async function enter(code, create, o = {}) {
+  if (!joinRoom) { $("err").textContent = "Loading multiplayer..."; if (!(await loadLib())) return; $("err").textContent = ""; }
+  try { enter2(code, create, o); } catch (e) { leaveToMenu("Couldn't start: " + (e && e.message || e)); }
+}
+function enter2(code, create, o = {}) {
   roomCode = code.toLowerCase();
   if (!(create && o.public)) lobbyLeave();
   room = joinRoom({ appId: APP }, "imp-" + roomCode);
@@ -347,7 +366,7 @@ function tick() {
 }
 setInterval(tick, 250);
 
-lobbyJoin(); renderRooms();
+loadLib().then(ok => ok && lobbyJoin()); renderRooms();
 </script>
 </body>
 </html>
